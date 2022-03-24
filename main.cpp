@@ -4,6 +4,7 @@
 #include "filesystem"
 #include <codecvt>
 #include <sstream>
+#include <fstream>
 
 #include "dictionary.h"
 #include "filemap.h"
@@ -11,6 +12,8 @@
 
 using namespace std;
 using recursive_directory_iterator = std::__fs::filesystem::recursive_directory_iterator;
+
+int CONTEXT_FREQUENCY_THRESHOLD = 5;
 
 vector<string> getFilesFromDir(const string& dirPath) {
     vector<string> files;
@@ -147,6 +150,8 @@ void handleFile(const string& filePath, unordered_map <wstring, vector<Word*>> *
     vector<wstring> leftStringConcordance;
     vector<wstring> rightStringConcordance;
 
+    int currentTargetPos = 0;
+
     while (filePtr && filePtr != lastChar) {
         auto stringBegin = filePtr;
         filePtr = static_cast<char *>(memchr(filePtr, '\n', lastChar - filePtr));
@@ -163,22 +168,31 @@ void handleFile(const string& filePath, unordered_map <wstring, vector<Word*>> *
                     begin = -1;
 
                     if (!wordStr.empty()) {
-                        if (rightStringConcordance.size() == windowSize + 1) {
+                        if (rightStringConcordance.size() == windowSize + target.size()) {
                             vector<WordContext> phraseContexts = processContext(rightStringConcordance, dictionary);
                             addContextsToSet(phraseContexts, rightStringToContext);
                             rightStringConcordance.clear();
-                        } else if (!rightStringConcordance.empty()) {
+                        } else if (rightStringConcordance.size() >= target.size()) {
                             rightStringConcordance.push_back(wordStr);
                         }
 
-                        if (haveCommonForm(wordStr, target[0], dictionary)) {
+                        if (haveCommonForm(wordStr, target[currentTargetPos], dictionary)) {
                             rightStringConcordance.push_back(wordStr);
-                            leftStringConcordance.push_back(wordStr);
-                            vector<WordContext> phraseContexts = processContext(leftStringConcordance, dictionary);
-                            addContextsToSet(phraseContexts, leftStringToContext);
+
+                            if (currentTargetPos == target.size() - 1) {
+                                leftStringConcordance.push_back(wordStr);
+                                vector<WordContext> phraseContexts = processContext(leftStringConcordance, dictionary);
+                                addContextsToSet(phraseContexts, leftStringToContext);
+                                currentTargetPos = 0;
+                                leftStringConcordance.pop_back();
+                            } else
+                                currentTargetPos++;
+                        } else if (currentTargetPos > 0) {
+                            currentTargetPos = 0;
+                            rightStringConcordance.clear();
                         }
 
-                        while (leftStringConcordance.size() >= windowSize)
+                        while (leftStringConcordance.size() >= windowSize + target.size() - 1)
                             leftStringConcordance.erase(leftStringConcordance.begin());
 
                         leftStringConcordance.push_back(wordStr);
@@ -194,7 +208,7 @@ void handleFile(const string& filePath, unordered_map <wstring, vector<Word*>> *
 }
 
 vector<WordContext> findConcordances(const string& dictPath, const string& corpusPath,
-                                     const wstring& targetString, int windowSize) {
+                                     const wstring& targetString, int windowSize, string outputFile) {
     vector<wstring> targetVector;
 
     wistringstream iss(targetString);
@@ -209,6 +223,8 @@ vector<WordContext> findConcordances(const string& dictPath, const string& corpu
 
     unordered_map <wstring, WordContext> leftStringToContext;
     unordered_map <wstring, WordContext> rightStringToContext;
+
+    cout << "Start handling files\n";
 
     for (const string& file : files)
         handleFile(file, &dictionary,
@@ -233,28 +249,50 @@ vector<WordContext> findConcordances(const string& dictPath, const string& corpu
     sort(leftContexts.begin(), leftContexts.end(), comp);
     sort(rightContexts.begin(), rightContexts.end(), comp);
 
-    cout << "Left:\n";
+    ofstream outFile (outputFile.c_str());
+
+    int printCount = 0;
+    cout << "\n";
     for (const WordContext& context : leftContexts) {
-        wcout << context.rawValue << " - " << context.count << " - " << context.normalizedForm << endl;
+        if (context.count >= CONTEXT_FREQUENCY_THRESHOLD) {
+            wcout << "<Left, \"" << context.rawValue << "\", " << context.count << ">\n";
+            printCount++;
+        }
+
+        string line = wstring_convert<codecvt_utf8<wchar_t>>().to_bytes(context.rawValue);
+        outFile << "<Left, \"" << line << "\", " << context.count << ">\n";
     }
 
-    cout << "\nRight:\n";
+    printCount = 0;
+    cout << "\n";
     for (const WordContext& context : rightContexts) {
-        wcout << context.rawValue << " - " << context.count << " - " << context.normalizedForm << endl;
+        if (context.count >= CONTEXT_FREQUENCY_THRESHOLD) {
+            wcout << "<Right, \"" << context.rawValue << "\", " << context.count << ">\n";
+            printCount++;
+        }
+
+        string line = wstring_convert<codecvt_utf8<wchar_t>>().to_bytes(context.rawValue);
+        outFile << "<Right, \"" << line << "\", " << context.count << ">\n";
     }
+
+    outFile.close();
 
     return concordances;
 }
 
 int main() {
+    CONTEXT_FREQUENCY_THRESHOLD = 10;
+
     locale::global(locale("ru_RU.UTF-8"));
     wcout.imbue(locale("ru_RU.UTF-8"));
 
     string dictPath = "dict_opcorpora_clear.txt";
     string corpusPath = "/Users/titrom/Desktop/Computational Linguistics/Articles";
     const int windowSize = 1;
-    wstring target = L"браузер";
+    wstring target = L"разработка";
 
-    auto concordances = findConcordances(dictPath, corpusPath, target, windowSize);
+    string outputFile = "concordances.txt";
+
+    auto concordances = findConcordances(dictPath, corpusPath, target, windowSize, outputFile);
     return 0;
 }
