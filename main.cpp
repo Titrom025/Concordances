@@ -138,8 +138,46 @@ void addContextsToSet(vector<WordContext>& contexts, unordered_map <wstring, Wor
     }
 }
 
+void handleWord(const wstring& wordStr, int windowSize,
+                int& currentTargetPos,
+                unordered_map <wstring, vector<Word*>> *dictionary,
+                const vector<wstring>& target,
+                vector<wstring>* leftStringConcordance,
+                vector<wstring>* rightStringConcordance,
+                unordered_map <wstring, WordContext> *leftStringToContext,
+                unordered_map <wstring, WordContext> *rightStringToContext) {
+    if (rightStringConcordance->size() == windowSize + target.size()) {
+        vector<WordContext> phraseContexts = processContext(*rightStringConcordance, dictionary);
+        addContextsToSet(phraseContexts, rightStringToContext);
+        rightStringConcordance->clear();
+    } else if (rightStringConcordance->size() >= target.size()) {
+        rightStringConcordance->push_back(wordStr);
+    }
+
+    if (haveCommonForm(wordStr, target[currentTargetPos], dictionary)) {
+        rightStringConcordance->push_back(wordStr);
+
+        if (currentTargetPos == target.size() - 1) {
+            leftStringConcordance->push_back(wordStr);
+            vector<WordContext> phraseContexts = processContext(*leftStringConcordance, dictionary);
+            addContextsToSet(phraseContexts, leftStringToContext);
+            currentTargetPos = 0;
+            leftStringConcordance->pop_back();
+        } else
+            currentTargetPos++;
+    } else if (currentTargetPos > 0) {
+        currentTargetPos = 0;
+        rightStringConcordance->clear();
+    }
+
+    while (leftStringConcordance->size() >= windowSize + target.size() - 1)
+        leftStringConcordance->erase(leftStringConcordance->begin());
+
+    leftStringConcordance->push_back(wordStr);
+}
+
 void handleFile(const string& filePath, unordered_map <wstring, vector<Word*>> *dictionary,
-               vector<wstring> target, int windowSize,
+               const vector<wstring>& target, int windowSize,
                 unordered_map <wstring, WordContext> *leftStringToContext,
                 unordered_map <wstring, WordContext> *rightStringToContext) {
 
@@ -157,49 +195,30 @@ void handleFile(const string& filePath, unordered_map <wstring, vector<Word*>> *
         filePtr = static_cast<char *>(memchr(filePtr, '\n', lastChar - filePtr));
 
         wstring line = wstring_convert<codecvt_utf8<wchar_t>>().from_bytes(stringBegin, filePtr);
+        wstring const delims{L" :;.,!?()" };
 
-        int begin = -1;
-        for (int pos = 0; pos < line.size(); pos++) {
-            wchar_t symbol = line[pos];
-            if (iswcntrl(symbol) || iswpunct(symbol) || iswspace(symbol)
-                || iswdigit(symbol) || iswcntrl(symbol)) {
-                if (begin != -1) {
-                    wstring wordStr = line.substr(begin, pos - begin);
-                    begin = -1;
+        size_t beg, pos = 0;
+        while ((beg = line.find_first_not_of(delims, pos)) != string::npos) {
+            pos = line.find_first_of(delims, beg + 1);
+            wstring wordStr = line.substr(beg, pos - beg);
 
-                    if (!wordStr.empty()) {
-                        if (rightStringConcordance.size() == windowSize + target.size()) {
-                            vector<WordContext> phraseContexts = processContext(rightStringConcordance, dictionary);
-                            addContextsToSet(phraseContexts, rightStringToContext);
-                            rightStringConcordance.clear();
-                        } else if (rightStringConcordance.size() >= target.size()) {
-                            rightStringConcordance.push_back(wordStr);
-                        }
+            handleWord(wordStr, windowSize, currentTargetPos,
+                       dictionary, target,
+                       &leftStringConcordance,
+                       &rightStringConcordance,
+                       leftStringToContext,
+                       rightStringToContext);
 
-                        if (haveCommonForm(wordStr, target[currentTargetPos], dictionary)) {
-                            rightStringConcordance.push_back(wordStr);
-
-                            if (currentTargetPos == target.size() - 1) {
-                                leftStringConcordance.push_back(wordStr);
-                                vector<WordContext> phraseContexts = processContext(leftStringConcordance, dictionary);
-                                addContextsToSet(phraseContexts, leftStringToContext);
-                                currentTargetPos = 0;
-                                leftStringConcordance.pop_back();
-                            } else
-                                currentTargetPos++;
-                        } else if (currentTargetPos > 0) {
-                            currentTargetPos = 0;
-                            rightStringConcordance.clear();
-                        }
-
-                        while (leftStringConcordance.size() >= windowSize + target.size() - 1)
-                            leftStringConcordance.erase(leftStringConcordance.begin());
-
-                        leftStringConcordance.push_back(wordStr);
-                    }
-                }
-            } else if (begin == -1) {
-                begin = pos;
+            if (line[pos] == L'.' || line[pos] == L',' ||
+                line[pos] == L'!' || line[pos] == L'?') {
+                wstring punct;
+                punct.push_back(line[pos]);
+                handleWord(punct, windowSize, currentTargetPos,
+                           dictionary, target,
+                           &leftStringConcordance,
+                           &rightStringConcordance,
+                           leftStringToContext,
+                           rightStringToContext);
             }
         }
         if (filePtr)
@@ -207,7 +226,7 @@ void handleFile(const string& filePath, unordered_map <wstring, vector<Word*>> *
     }
 }
 
-vector<WordContext> findConcordances(const string& dictPath, const string& corpusPath,
+void findConcordances(const string& dictPath, const string& corpusPath,
                                      const wstring& targetString, int windowSize, string outputFile) {
     vector<wstring> targetVector;
 
@@ -219,13 +238,10 @@ vector<WordContext> findConcordances(const string& dictPath, const string& corpu
     auto dictionary = initDictionary(dictPath);
     vector<string> files = getFilesFromDir(corpusPath);
 
-    vector<WordContext> concordances;
-
     unordered_map <wstring, WordContext> leftStringToContext;
     unordered_map <wstring, WordContext> rightStringToContext;
 
     cout << "Start handling files\n";
-
     for (const string& file : files)
         handleFile(file, &dictionary,
                    targetVector, windowSize,
@@ -276,8 +292,6 @@ vector<WordContext> findConcordances(const string& dictPath, const string& corpu
     }
 
     outFile.close();
-
-    return concordances;
 }
 
 int main() {
@@ -293,6 +307,6 @@ int main() {
 
     string outputFile = "concordances.txt";
 
-    auto concordances = findConcordances(dictPath, corpusPath, target, windowSize, outputFile);
+    findConcordances(dictPath, corpusPath, target, windowSize, outputFile);
     return 0;
 }
